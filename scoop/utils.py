@@ -42,7 +42,7 @@ localHostnames = loopbackReferences + [
 try:
     localHostnames.extend([
         ip for ip in socket.gethostbyname_ex(socket.gethostname())[2]
-            if not ip.startswith("127.")][:1]
+        if not ip.startswith("127.")][:1]
     )
 except socket.gaierror as e:
     sys.stderr.write("WARNING: Could not find system address(es):\n"
@@ -51,49 +51,50 @@ except socket.gaierror as e:
 
 loggingConfig = {}
 
-def initLogging(verbosity=0, name="SCOOP"):
-        """Creates a logger."""
-        global loggingConfig
 
-        verbose_levels = {
-            -2: "CRITICAL",
-            -1: "ERROR",
-            0: "WARNING",
-            1: "INFO",
-            2: "DEBUG",
-            3: "DEBUG",
-            4: "NOSET",
-        }
-        log_handlers = {
-            "console":
+def initLogging(verbosity=0, name="SCOOP"):
+    """Creates a logger."""
+    global loggingConfig
+
+    verbose_levels = {
+        -2: "CRITICAL",
+        -1: "ERROR",
+        0: "WARNING",
+        1: "INFO",
+        2: "DEBUG",
+        3: "DEBUG",
+        4: "NOSET",
+    }
+    log_handlers = {
+        "console":
+        {
+            "class": "logging.StreamHandler",
+            "formatter": "{name}Formatter".format(name=name),
+            "stream": "ext://sys.stderr",
+        },
+    }
+    loggingConfig.update({
+        "{name}Logger".format(name=name):
+        {
+            "handlers": ["console"],
+            "level": verbose_levels[verbosity],
+        },
+    })
+    dict_log_config = {
+        "version": 1,
+        "handlers": log_handlers,
+        "loggers": loggingConfig,
+        "formatters":
+        {
+            "{name}Formatter".format(name=name):
             {
-                "class": "logging.StreamHandler",
-                "formatter": "{name}Formatter".format(name=name),
-                "stream": "ext://sys.stderr",
+                "format": "[%(asctime)-15s] %(module)-9s "
+                          "%(levelname)-7s %(message)s",
             },
-        }
-        loggingConfig.update({
-            "{name}Logger".format(name=name):
-            {
-                "handlers": ["console"],
-                "level": verbose_levels[verbosity],
-            },
-        })
-        dict_log_config = {
-            "version": 1,
-            "handlers": log_handlers,
-            "loggers": loggingConfig,
-            "formatters":
-            {
-                "{name}Formatter".format(name=name):
-                {
-                    "format": "[%(asctime)-15s] %(module)-9s "
-                              "%(levelname)-7s %(message)s",
-                },
-            },
-        }
-        dictConfig(dict_log_config)
-        return logging.getLogger("{name}Logger".format(name=name))
+        },
+    }
+    dictConfig(dict_log_config)
+    return logging.getLogger("{name}Logger".format(name=name))
 
 
 def externalHostname(hosts):
@@ -201,25 +202,40 @@ def getHostsFromList(hostlist):
     return retVal
 
 
-def parseSLURM(string):
+def parseSLURM(nodelist, cpus_per_node):
     """Return a host list from a SLURM string"""
-    # Use scontrol utility to get the hosts list
-    import subprocess, os
-    hostsstr = subprocess.check_output(["scontrol", "show", "hostnames", string])
+    import subprocess
+    hostsstr = subprocess.check_output(
+        ["scontrol", "show", "hostnames", nodelist])
     if sys.version_info.major > 2:
         hostsstr = hostsstr.decode()
     # Split using endline
     hosts = hostsstr.split(os.linesep)
     # Take out last empty host
-    hosts = filter(None, hosts)
-    # Create the desired pair of host and number of hosts
-    hosts = [(host, 1) for host in hosts]
+    hosts = list(filter(None, hosts))
+
+    nums = []
+    for n_cpus in cpus_per_node.split(","):
+        try:
+            # n is an integer
+            nums.append(int(n_cpus))
+        except ValueError:
+            # n is in the format of 1(x2)
+            matched = re.findall("(\d)\(x(\d)\)", n_cpus)
+            assert len(matched) == 1, "Unable to parse SLURM_JOB_CPUS_PER_NODE"
+            procs, reps = matched[0]
+            nums += [int(procs)] * int(reps)
+
+    assert len(hosts) == len(
+        nums), "SLURM_JOB_NODELIST and SLURM_JOB_CPUS_PER_NODE mismatch"
+
+    hosts = [(hosts[i], nums[i]) for i in range(len(hosts))]
     return hosts
 
 
 def getHostsFromSLURM():
     """Return a host list from a SLURM environment"""
-    return parseSLURM(os.environ["SLURM_NODELIST"])
+    return parseSLURM(os.environ["SLURM_JOB_NODELIST"], os.environ["SLURM_JOB_CPUS_PER_NODE"])
 
 
 def getHostsFromPBS():
@@ -264,6 +280,7 @@ def getDefaultHosts():
 try:
     # Python 2.X  fallback
     basestring  # attempt to evaluate basestring
+
     def isStr(string):
         return isinstance(string, basestring)
 except NameError:
